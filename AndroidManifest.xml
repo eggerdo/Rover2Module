@@ -32,6 +32,8 @@
 
         <service
 			android:name="org.dobots.rover2module.Rover2Service" >
+			<!-- making the service into it's own process will screw up the ZmqHandler!
+			     android:process=":remote"  -->
 			<intent-filter>
 				<action android:name="android.intent.action.RUN" />
 				<category android:name="android.intent.category.DEFAULT" />

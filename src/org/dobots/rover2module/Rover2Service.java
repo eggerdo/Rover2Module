@@ -1,7 +1,5 @@
 package org.dobots.rover2module;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.HashMap;
 
 import org.dobots.aim.AimProtocol;
@@ -15,10 +13,8 @@ import org.zeromq.ZMQ;
 
 import robots.ctrl.IRemoteRobot;
 import robots.rover.rover2.ctrl.Rover2;
-import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
@@ -27,6 +23,10 @@ import android.os.RemoteException;
 import android.util.Log;
 
 public class Rover2Service extends AimService implements IRemoteRobot {
+	
+	static final int RPC = 1000;
+	static final int INIT_REMOTECONNECTION = RPC + 1;
+	static final int CLOSE_REMOTECONNECTION = INIT_REMOTECONNECTION + 1;
 
 	private static final String TAG = "Rover2Service";
 	private static final String MODULE_NAME = "Rover2Module";
@@ -39,13 +39,13 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 		}
 	}
 
-	private Rover2 mRover2;
+	private Rover2 mRobot;
 	
 	private Messenger mPortCmdInMessenger = new Messenger(new PortCmdMessengerHandler());
 	private Messenger mPortVideoOutMessenger = null;
 	
 	// socket to forward commands coming in over the messenger to the zmq handler
-	ZMQ.Socket m_oZmqForwarder;
+	private ZMQ.Socket m_oZmqForwarder;
 
 	@Override
 	protected String getModuleName() {
@@ -65,7 +65,7 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 		list.put("video", mPortVideoOutMessenger);
 	}
 
-	public class PortCmdMessengerHandler extends Handler {
+	class PortCmdMessengerHandler extends Handler {
 		@Override
 		public void handleMessage(Message msg) {
 			switch (msg.what) {
@@ -79,12 +79,12 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 					// given to the method in the order that they are defined.
 					// works only if the type and order of the parameters is correct
 					// and only for primitive types, not for objects!!
-					RoboCommands.handleControlCommand((ControlCommand)cmd, mRover2);
+					RoboCommands.handleControlCommand((ControlCommand)cmd, mRobot);
 				} else {
 					if (cmd != null) {
 						// Assumption: messages that arrive on this port are for this robot
 						// if that is not the case, the robot id has to be added to the header
-						cmd.strRobotID = mRover2.getID();
+						cmd.strRobotID = mRobot.getID();
 						ZmqUtils.sendCommand(cmd, m_oZmqForwarder);
 					}
 				}
@@ -97,12 +97,63 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 		}
 	}
 	
+	class IncomingHandler extends Handler {
+		
+		@Override
+		public void handleMessage(Message msg) {
+			
+			switch(msg.what) {
+			case RPC:
+				String data = msg.getData().getString("data");
+
+				Log.d(TAG, "recv rpc: " + data);
+				
+				BaseCommand cmd = RoboCommands.decodeCommand(data);
+				if (cmd instanceof ControlCommand) {
+					RoboCommands.handleControlCommand((ControlCommand)cmd, mRobot);
+				}
+				break;
+			case INIT_REMOTECONNECTION:
+				mOutgoingMessenger = msg.replyTo;
+				break;
+			case CLOSE_REMOTECONNECTION:
+				mOutgoingMessenger = null;
+				break;
+			default:
+				super.handleMessage(msg);
+			}
+			
+		}
+	}
+	
+	class MyHandler extends Handler {
+		
+		@Override
+		public void handleMessage(Message msg) {
+			if (mOutgoingMessenger != null) {
+				try {
+					Message newMessage = new Message();
+					newMessage.copyFrom(msg);
+					mOutgoingMessenger.send(newMessage);
+				} catch (RemoteException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+	
+	final Messenger mIncomingMessenger = new Messenger(new IncomingHandler());
+	Messenger mOutgoingMessenger = null;
+	
+	final MyHandler robotHandler = new MyHandler();
+	
 	@Override
 	public IBinder onBind(Intent intent) {
-		Log.i(TAG, "onBind: " + intent.toString() + ", service: " + mBinder.toString());
-		return mBinder;
+		Log.i(TAG, "onBind: " + intent.toString());
+		return mIncomingMessenger.getBinder();
 	}
-
+	
 	public void onCreate() {
 		super.onCreate();
 		
@@ -112,13 +163,14 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 		
 		m_oZmqForwarder = ZmqHandler.getInstance().obtainCommandSendSocket();
 		
-		mRover2 = new Rover2();
+		mRobot = new Rover2();
+		mRobot.setHandler(robotHandler);
 	}
 
 	public void onDestroy() {
 		super.onDestroy();
 		
-		mRover2.destroy();
+		mRobot.destroy();
 
 		if (ZmqHandler.getInstance() != null) {
 			ZmqHandler.getInstance().onDestroy();
@@ -128,36 +180,36 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 	@Override
 	public String getID() {
 		// TODO Auto-generated method stub
-		return mRover2.getID();
+		return mRobot.getID();
 	}
 	
 	@Override
 	public void setConnection(String address, int port) {
 		Log.i(TAG, "setConnection...");
-		mRover2.setConnection(address, port);
+		mRobot.setConnection(address, port);
 	}
 
 	@Override
 	public boolean isConnected() {
-		Log.i(TAG, "is Connected " + mRover2.isConnected());
-		return mRover2.isConnected();
+		Log.i(TAG, "is Connected " + mRobot.isConnected());
+		return mRobot.isConnected();
 	}
 
 	@Override
 	public void connect() {
 		Log.i(TAG, "connect...");
-		mRover2.connect();
+		mRobot.connect();
 	}
 
 	@Override
 	public void disconnect() {
 		Log.i(TAG, "disconnect...");
-		mRover2.disconnect();
+		mRobot.disconnect();
 	}
 
 	@Override
 	public void setHandler(Handler handler) {
-		mRover2.setHandler(handler);
+		mRobot.setHandler(handler);
 	}
 
 }
