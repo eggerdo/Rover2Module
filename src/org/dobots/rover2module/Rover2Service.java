@@ -1,5 +1,6 @@
 package org.dobots.rover2module;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 
 import org.dobots.aim.AimProtocol;
@@ -9,35 +10,35 @@ import org.dobots.communication.msg.RoboCommands.BaseCommand;
 import org.dobots.communication.msg.RoboCommands.ControlCommand;
 import org.dobots.communication.zmq.ZmqHandler;
 import org.dobots.communication.zmq.ZmqUtils;
+import org.dobots.utilities.Utils;
+import org.json.JSONException;
+import org.json.JSONObject;
 import org.zeromq.ZMQ;
 
-import robots.ctrl.IRemoteRobot;
+import robots.ctrl.RemoteRobot;
 import robots.rover.rover2.ctrl.Rover2;
 import android.content.Intent;
-import android.os.Binder;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
 import android.util.Log;
 
-public class Rover2Service extends AimService implements IRemoteRobot {
+public class Rover2Service extends AimService {
 	
-	static final int RPC = 1000;
-	static final int INIT_REMOTECONNECTION = RPC + 1;
-	static final int CLOSE_REMOTECONNECTION = INIT_REMOTECONNECTION + 1;
-
 	private static final String TAG = "Rover2Service";
 	private static final String MODULE_NAME = "Rover2Module";
 	
-	private final IBinder mBinder = new LocalBinder();
-	
-	public class LocalBinder extends Binder {
-		Rover2Service getService() {
-			return Rover2Service.this;
-		}
-	}
+//	private final IBinder mBinder = new LocalBinder();
+//	
+//	public class LocalBinder extends Binder {
+//		Rover2Service getService() {
+//			return Rover2Service.this;
+//		}
+//	}
 
 	private Rover2 mRobot;
 	
@@ -97,119 +98,155 @@ public class Rover2Service extends AimService implements IRemoteRobot {
 		}
 	}
 	
-	class IncomingHandler extends Handler {
+	private Receiver mReceiver;
+	class Receiver extends Thread {
 		
-		@Override
-		public void handleMessage(Message msg) {
-			
-			switch(msg.what) {
-			case RPC:
-				String data = msg.getData().getString("data");
-
-				Log.d(TAG, "recv rpc: " + data);
-				
-				BaseCommand cmd = RoboCommands.decodeCommand(data);
-				if (cmd instanceof ControlCommand) {
-					RoboCommands.handleControlCommand((ControlCommand)cmd, mRobot);
-				}
-				break;
-			case INIT_REMOTECONNECTION:
-				mOutgoingMessenger = msg.replyTo;
-				break;
-			case CLOSE_REMOTECONNECTION:
-				mOutgoingMessenger = null;
-				break;
-			default:
-				super.handleMessage(msg);
+		private Messenger mMessenger = null;
+		
+		public Messenger getMessenger() {
+			int n = 0;
+			while (mMessenger == null) {
+				Utils.waitSomeTime(1);
+				n++;
 			}
-			
+			return mMessenger;
 		}
+		
+		public void run() {
+			
+			Looper.prepare();
+			mMessenger = new Messenger(new Handler() {
+				
+				@Override
+				public void handleMessage(Message msg) {
+					
+					switch(msg.what) {
+					case RemoteRobot.RPC:
+						String data = msg.getData().getString("data");
+
+						Log.d(TAG, "recv rpc: " + data);
+						
+						BaseCommand cmd = RoboCommands.decodeCommand(data);
+						if (cmd instanceof ControlCommand) {
+							Object result = RoboCommands.handleControlCommand((ControlCommand)cmd, mRobot);
+							if (result != null) {
+								sendReply(msg.replyTo, (ControlCommand)cmd, result);
+							}
+						}
+						break;
+					case RemoteRobot.INIT:
+						mServiceOutMessengers.add(msg.replyTo);
+						
+						Message reply = Message.obtain(null, RemoteRobot.INIT);
+						Bundle bundle = new Bundle();
+						bundle.putString("robot_id", mRobot.getID());
+						reply.setData(bundle);
+						try {
+							msg.replyTo.send(reply);
+						} catch (RemoteException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+						
+						break;
+					case RemoteRobot.CLOSE:
+						mServiceOutMessengers.remove(msg.replyTo);
+						break;
+//					case RemoteRobot.REGISTER:
+//						mServiceOutMessengers
+//						break;
+					default:
+						super.handleMessage(msg);
+					}
+					
+				}
+
+			});
+			Looper.loop();
+			
+		};
+	};
+	
+	private Messenger getInMessenger() {
+		return mReceiver.getMessenger();
 	}
 	
-	class MyHandler extends Handler {
+	private void sendReply(Messenger replyTo, ControlCommand cmd, Object result) {
 		
+		JSONObject replyJson = new JSONObject();
+		try {
+			replyJson.put(cmd.mCommand, result);
+
+			Message reply = Message.obtain(null, RemoteRobot.REPLY);
+			
+			Bundle bundle = new Bundle();
+			bundle.putString("data", replyJson.toString());
+			reply.setData(bundle);
+
+			Log.d(TAG, "send reply: " + replyJson.toString());
+			
+			replyTo.send(reply);
+			
+		} catch (JSONException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (RemoteException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		
+	}
+	
+//	private Messenger mServiceInMessenger = new Messenger(new ServiceInMessageHandler());
+	private ArrayList<Messenger> mServiceOutMessengers = new ArrayList<Messenger>();
+	
+	private Handler robotHandler = new Handler() {
 		@Override
 		public void handleMessage(Message msg) {
-			if (mOutgoingMessenger != null) {
+
+			Message newMessage = Message.obtain();
+			newMessage.copyFrom(msg);
+			
+			for (Messenger messenger : mServiceOutMessengers) {
 				try {
-					Message newMessage = new Message();
-					newMessage.copyFrom(msg);
-					mOutgoingMessenger.send(newMessage);
+					messenger.send(newMessage);
 				} catch (RemoteException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
 			}
 		}
-	}
-	
-	final Messenger mIncomingMessenger = new Messenger(new IncomingHandler());
-	Messenger mOutgoingMessenger = null;
-	
-	final MyHandler robotHandler = new MyHandler();
+	};
 	
 	@Override
 	public IBinder onBind(Intent intent) {
 		Log.i(TAG, "onBind: " + intent.toString());
-		return mIncomingMessenger.getBinder();
+		return getInMessenger().getBinder();
 	}
-	
+
+	@Override
 	public void onCreate() {
 		super.onCreate();
 		
-		if (ZmqHandler.getInstance() == null) {
-			ZmqHandler.initialize(this);
-		}
+		ZmqHandler.initialize(this);
 		
 		m_oZmqForwarder = ZmqHandler.getInstance().obtainCommandSendSocket();
+		
+		mReceiver = new Receiver();
+		mReceiver.start();
 		
 		mRobot = new Rover2();
 		mRobot.setHandler(robotHandler);
 	}
 
+	@Override
 	public void onDestroy() {
 		super.onDestroy();
 		
 		mRobot.destroy();
 
-		if (ZmqHandler.getInstance() != null) {
-			ZmqHandler.getInstance().onDestroy();
-		}
-	}
-
-	@Override
-	public String getID() {
-		// TODO Auto-generated method stub
-		return mRobot.getID();
-	}
-	
-	@Override
-	public void setConnection(String address, int port) {
-		Log.i(TAG, "setConnection...");
-		mRobot.setConnection(address, port);
-	}
-
-	@Override
-	public boolean isConnected() {
-		Log.i(TAG, "is Connected " + mRobot.isConnected());
-		return mRobot.isConnected();
-	}
-
-	@Override
-	public void connect() {
-		Log.i(TAG, "connect...");
-		mRobot.connect();
-	}
-
-	@Override
-	public void disconnect() {
-		Log.i(TAG, "disconnect...");
-		mRobot.disconnect();
-	}
-
-	@Override
-	public void setHandler(Handler handler) {
-		mRobot.setHandler(handler);
+		ZmqHandler.destroyInstance();
 	}
 
 }

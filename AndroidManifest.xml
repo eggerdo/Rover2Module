@@ -17,7 +17,8 @@
         android:label="@string/app_name" >
         <activity
             android:name="org.dobots.rover2module.Rover2Module"
-            android:label="@string/app_name" >
+            android:label="@string/app_name"
+		    android:screenOrientation="portrait" >
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
