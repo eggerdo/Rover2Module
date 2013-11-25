@@ -1,10 +1,10 @@
-package org.dobots.rover2module;
+package org.dobots.rover2;
 
 
 import org.dobots.communication.zmq.ZmqHandler;
 
 import robots.RobotType;
-import robots.ctrl.RemoteRobot;
+import robots.ctrl.RemoteWrapperUi;
 import robots.rover.rover2.ctrl.remote.Rover2Remote;
 import robots.rover.rover2.gui.Rover2Robot;
 import android.os.Bundle;
@@ -20,9 +20,9 @@ public class Rover2Module extends Rover2Robot  {
 		ZmqHandler.initialize(this);
 		
 		m_eRobot = RobotType.RBT_ROVER2;
-		m_bOwnsRobot = true;
+//		m_bOwnsRobot = true;
 
-		RemoteRobot robot = new Rover2Remote(this, RobotType.RBT_ROVER2, Rover2Service.class);
+		RemoteWrapperUi robot = new Rover2Remote(this, RobotType.RBT_ROVER2, RobotService.class);
 		robot.setHandler(m_oUiHandler);
 		setRobot(robot);
 		
@@ -60,6 +60,8 @@ public class Rover2Module extends Rover2Robot  {
 		super.onDestroy();
 		
 //		getRobot().destroy();
+		
+		
 		Log.i(TAG, "onDestroy");
 	}
 
