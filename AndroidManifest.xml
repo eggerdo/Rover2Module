@@ -32,7 +32,7 @@
         </activity>
 
         <service
-			android:name="org.dobots.rover2.RobotService" >
+			android:name="org.dobots.rover2.Rover2Service" >
 			<!-- making the service into it's own process will screw up the ZmqHandler!
 			     android:process=":remote"  -->
 			<intent-filter>
